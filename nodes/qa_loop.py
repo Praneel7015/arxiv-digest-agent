@@ -141,6 +141,22 @@ def answer_question(state: AgentState, question: str, *, top_k: int = 4) -> Agen
 
     context_blocks = []
     chunk_ids = []
+
+    # Inject paper metadata so the LLM can answer basic metadata questions
+    # (author, date, title) that aren't in the PDF text chunks.
+    paper = state.selected_paper
+    if paper:
+        meta_block = (
+            f"[PAPER_METADATA]\n"
+            f"Title: {paper.title}\n"
+            f"Authors: {', '.join(paper.authors)}\n"
+            f"arXiv ID: {paper.arxiv_id}\n"
+            f"Published: {paper.published}\n"
+            f"Categories: {', '.join(paper.categories)}\n"
+            f"Abstract: {paper.abstract}"
+        )
+        context_blocks.append(meta_block)
+
     for h in hits:
         chunk_ids.append(h["chunk_id"])
         context_blocks.append(

@@ -29,7 +29,7 @@ Rules:
 """
 
 
-def _context_blob(state: AgentState, max_chars: int = 12_000) -> str:
+def _context_blob(state: AgentState, max_chars: int = 14_000) -> str:
     paper = state.selected_paper
     parts: list[str] = []
     if paper:
@@ -53,11 +53,17 @@ def _context_blob(state: AgentState, max_chars: int = 12_000) -> str:
         "conclusion",
     ]
     sections = state.parsed_sections or {}
+    included = set()
     for key in preferred:
         if key in sections:
             parts.append(f"## {key.upper()}\n{sections[key][:2500]}")
+            included.add(key)
 
-    # Include any remaining sections until budget is hit.
+    # Include remaining sections (abstract, preamble, etc.) until budget is hit.
+    for key, text in sections.items():
+        if key not in included and key != "preamble":
+            parts.append(f"## {key.upper()}\n{text[:1500]}")
+
     blob = "\n\n".join(parts)
     if len(blob) > max_chars:
         blob = blob[:max_chars] + "\n\n[truncated]"
@@ -110,6 +116,18 @@ def summarize(state: AgentState) -> AgentState:
     if not lim:
         briefing["limitations"] = [
             "Paper text did not clearly enumerate limitations; treat claims cautiously."
+        ]
+    kr = briefing.get("key_results")
+    if not kr:
+        briefing["key_results"] = [
+            "Key results could not be extracted — the results section may have been truncated or absent."
+        ]
+    sf = briefing.get("suggested_followups")
+    if not sf:
+        briefing["suggested_followups"] = [
+            "What datasets or benchmarks are used?",
+            "How does this compare to prior work?",
+            "What are the main limitations?",
         ]
 
     if state.parse_status == "failed":
