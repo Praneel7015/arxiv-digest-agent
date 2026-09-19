@@ -28,7 +28,28 @@ Return ONLY a JSON object with key "queries" containing an array of 2-3 rephrase
 Each rephrasing should use different vocabulary but preserve the original meaning.
 Do not add explanations outside the JSON."""
 
-RERANK_ALPHA = 0.6  # semantic weight; (1-alpha) = BM25 weight
+RERANK_ALPHA = 0.6       # semantic weight; (1-alpha) = BM25 weight
+SECTION_BOOST = 0.15     # bonus for chunks from a question-relevant section
+
+# Map question keywords to likely paper sections.
+_SECTION_HINTS: dict[str, list[str]] = {
+    "method":       ["method", "methods", "methodology", "approach", "model", "architecture"],
+    "results":      ["results", "result", "experiments", "experiment", "evaluation", "performance"],
+    "abstract":     ["abstract", "summary", "overview", "contribution"],
+    "introduction": ["introduction", "background", "motivation", "related"],
+    "conclusion":   ["conclusion", "conclusions", "discussion", "future"],
+    "limitations":  ["limitation", "limitations", "weakness", "drawback"],
+}
+
+
+def _detect_section_hint(question: str) -> set[str]:
+    """Detect which paper sections a question likely targets, using keyword matching."""
+    q_lower = question.lower()
+    matched: set[str] = set()
+    for section, keywords in _SECTION_HINTS.items():
+        if any(kw in q_lower for kw in keywords):
+            matched.add(section)
+    return matched
 
 
 def _expand_qa_question(question: str) -> list[str]:
@@ -63,7 +84,7 @@ def _retrieve_multi_query(
 
 
 def _hybrid_rerank(question: str, hits: list[dict], top_k: int) -> list[dict]:
-    """Rerank retrieved chunks using BM25 + cosine hybrid scoring."""
+    """Rerank retrieved chunks using BM25 + cosine hybrid scoring + section metadata boost."""
     if len(hits) <= top_k:
         return hits
 
@@ -85,6 +106,16 @@ def _hybrid_rerank(question: str, hits: list[dict], top_k: int) -> list[dict]:
         return np.zeros_like(a) if (hi - lo) < 1e-9 else (a - lo) / (hi - lo)
 
     combined = RERANK_ALPHA * norm(cosine_scores) + (1 - RERANK_ALPHA) * norm(bm25_scores)
+
+    # Section metadata boost: if the question implies a specific section,
+    # give matching chunks a small score bump.
+    hint_sections = _detect_section_hint(question)
+    if hint_sections:
+        for i, h in enumerate(hits):
+            chunk_section = h.get("section", "").lower()
+            if any(hint in chunk_section for hint in hint_sections):
+                combined[i] += SECTION_BOOST
+
     order = np.argsort(-combined)[:top_k]
     return [hits[i] for i in order]
 

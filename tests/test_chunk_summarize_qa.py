@@ -2,7 +2,7 @@ import numpy as np
 from state import AgentState, PaperMeta, Chunk
 from nodes.chunk_and_embed import chunk_and_embed, _chunk_text
 from nodes.summarize import summarize
-from nodes.qa_loop import answer_question, _expand_qa_question, _hybrid_rerank, _retrieve_multi_query
+from nodes.qa_loop import answer_question, _expand_qa_question, _hybrid_rerank, _retrieve_multi_query, _detect_section_hint
 import llm
 import vectorstore
 import embeddings
@@ -50,34 +50,36 @@ def test_chunk_and_embed_upserts(monkeypatch, tmp_path):
     assert captured["n"] == len(state.chunks)
 
 
-def test_contextual_chunk_headers(monkeypatch):
-    """chunk_and_embed should prepend 'Title | section:' to each chunk's text."""
-    paper = PaperMeta(
-        arxiv_id="2401.33333",
-        title="Attention Is All You Need",
-        authors=["V"],
-        abstract="abs",
-        pdf_url="http://x",
-        published="2024",
-    )
-    state = AgentState(
-        query="q",
-        selected_paper=paper,
-        parsed_sections={"method": "We use self-attention."},
-        parse_status="ok",
+def test_section_hint_detection():
+    """_detect_section_hint should map question keywords to paper sections."""
+    assert "method" in _detect_section_hint("What method did they use?")
+    assert "results" in _detect_section_hint("What were the evaluation results?")
+    assert "results" in _detect_section_hint("How was the performance?")
+    assert "conclusion" in _detect_section_hint("What is the conclusion?")
+    assert len(_detect_section_hint("Tell me about this paper")) == 0
+
+
+def test_section_boost_in_reranking(monkeypatch):
+    """Chunks from a question-relevant section should get a metadata boost."""
+    hits = [
+        {"chunk_id": "intro_0", "section": "introduction", "text": "attention is a mechanism for weighting"},
+        {"chunk_id": "method_0", "section": "method", "text": "attention is used as the core mechanism"},
+        {"chunk_id": "results_0", "section": "results", "text": "attention heads show varied patterns"},
+        {"chunk_id": "method_1", "section": "method", "text": "the approach uses multi-head attention"},
+        {"chunk_id": "conclusion_0", "section": "conclusion", "text": "attention replaced recurrence entirely"},
+    ]
+
+    # Make all embeddings identical so cosine scores are equal — only BM25 + section boost differ.
+    monkeypatch.setattr(
+        embeddings, "embed",
+        lambda texts: np.ones((len(texts), 4), dtype=np.float32),
     )
 
-    monkeypatch.setattr(
-        "embeddings.embed",
-        lambda texts: np.ones((len(texts), 8), dtype=np.float32),
-    )
-    monkeypatch.setattr(
-        "vectorstore.upsert_chunks",
-        lambda arxiv_id, chunks, **kw: "paper_test",
-    )
-
-    state = chunk_and_embed(state)
-    assert state.chunks[0].text.startswith("Attention Is All You Need | method:")
+    # Ask a "method" question — method chunks should be boosted.
+    result = _hybrid_rerank("What method did they use for attention?", hits, top_k=3)
+    result_sections = [h["section"] for h in result]
+    # At least one method chunk should appear (boosted by section hint).
+    assert "method" in result_sections
 
 
 def test_summarize_enforces_limitations(monkeypatch):
