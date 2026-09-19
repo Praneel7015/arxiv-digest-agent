@@ -21,7 +21,7 @@ def normalize_id(raw: str) -> str:
     return match.group(0)
 
 
-def search_by_topic(query: str, max_results: int = 5) -> list[PaperMeta]:
+def search_by_topic(query: str, max_results: int = 10) -> list[PaperMeta]:
     params = {
         "search_query": f"all:{query}",
         "start": 0,
@@ -33,6 +33,23 @@ def search_by_topic(query: str, max_results: int = 5) -> list[PaperMeta]:
     resp.raise_for_status()
     feed = feedparser.parse(resp.text)
     return [_entry_to_meta(e) for e in feed.entries]
+
+
+def search_multi_queries(
+    queries: list[str], per_query: int = 10
+) -> list[PaperMeta]:
+    """Run multiple arXiv searches and deduplicate by arxiv_id."""
+    seen: dict[str, PaperMeta] = {}
+    for q in queries:
+        try:
+            results = search_by_topic(q, max_results=per_query)
+        except Exception:
+            continue
+        for paper in results:
+            base_id = paper.arxiv_id.split("v")[0]
+            if base_id not in seen:
+                seen[base_id] = paper
+    return list(seen.values())
 
 
 def fetch_by_id(raw_id: str) -> PaperMeta | None:

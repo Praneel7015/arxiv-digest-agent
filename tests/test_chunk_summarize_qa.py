@@ -119,6 +119,7 @@ def test_state_save_load_roundtrip(tmp_path):
     state = AgentState(
         query="topic",
         intent="topic_search",
+        expanded_queries=["topic", "related topic query"],
         candidates=[
             PaperMeta("1", "t", ["a"], "abs", "u", "d", ["cs.LG"]),
         ],
@@ -132,3 +133,4 @@ def test_state_save_load_roundtrip(tmp_path):
     assert loaded.selected_paper.arxiv_id == "1"
     assert loaded.chunks[0].text == "hello"
     assert loaded.qa_history[0][0] == "q"
+    assert loaded.expanded_queries == ["topic", "related topic query"]

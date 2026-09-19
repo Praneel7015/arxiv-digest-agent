@@ -16,3 +16,4 @@ sessions/*.json
 Thumbs.db
 docs/
 _inspect/
+eval_results.json

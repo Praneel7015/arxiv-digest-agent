@@ -39,6 +39,9 @@ class AgentState:
     candidates: list[PaperMeta] = field(default_factory=list)
     selected_paper: Optional[PaperMeta] = None
 
+    # LLM-expanded query variants for wider arXiv recall (topic_search only)
+    expanded_queries: list[str] = field(default_factory=list)
+
     parsed_sections: dict[str, str] = field(default_factory=dict)
     parse_status: Literal["ok", "partial", "failed", "pending"] = "pending"
 

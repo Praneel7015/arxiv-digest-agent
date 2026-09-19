@@ -11,17 +11,18 @@ Built for the 8byte AI Intern assessment as an explicit **stateful graph** (node
 
 ```
                     ┌─────────────────────┐
- query ───────────► │ query_understanding │
+ query ───────────► │ query_understanding │ ◄── LLM expands topic to 5-6 search queries
                     └──────────┬──────────┘
                                │ intent: topic_search | paper_lookup
                     ┌──────────▼──────────┐
-                    │   arxiv_retrieval   │ ◄── official Atom API
+                    │   arxiv_retrieval   │ ◄── multi-query fetch (~50 papers), dedup
                     └──────────┬──────────┘
                ┌───────────────┼───────────────┐
                │ 0 results     │ 1 result      │ many results
                ▼               ▼               ▼
          error_handler   fetch_and_parse  selection_ranking
-               │               ▲               │
+               │               ▲            (hybrid BM25 + cosine,
+               │               │             two-stage: 50→10→1)
                │               └───────────────┘
                │               │
                │      ┌────────▼────────┐
@@ -40,6 +41,7 @@ Built for the 8byte AI Intern assessment as an explicit **stateful graph** (node
 | Field | Role |
 |---|---|
 | `query`, `intent` | Raw input + routing decision |
+| `expanded_queries` | LLM-generated search query variants for wider recall |
 | `candidates`, `selected_paper` | arXiv metadata |
 | `parsed_sections`, `parse_status` | PDF extract (`ok` / `partial` / `failed`) |
 | `chunks`, `collection_name` | Chunk list + Chroma collection for this paper |
@@ -54,7 +56,7 @@ State is a dataclass with `save()` / `load()` so a session can pause after the b
 | Case | Behavior |
 |---|---|
 | Zero arXiv hits | Route to `error_handler`, ask to rephrase (warning) |
-| Many topic hits | Embed query + abstracts, cosine-rank, pick top-1 (scores logged) |
+| Many topic hits | Hybrid BM25 + cosine two-stage ranking (50→10→1, scores logged) |
 | PDF parse failure | `parse_status=failed`, fall back to **abstract-only** briefing |
 | Answer not in paper | QA replies: `I couldn't find that in the paper.` |
 
@@ -65,6 +67,7 @@ State is a dataclass with `save()` / `load()` so a session can pause after the b
 | Orchestration | Custom Python state machine | Rubric wants justified graph design; no framework lock-in |
 | LLM | Groq `openai/gpt-oss-20b` (default) | Free tier; swap to `openai/gpt-oss-120b` or `qwen/qwen3.8-27b` in `.env` if available |
 | Embeddings | `sentence-transformers` / `all-MiniLM-L6-v2` | Local, free, ~80MB, good enough for ranking + RAG |
+| Lexical ranking | `rank-bm25` (BM25Okapi) | Pure Python, no GPU; hybrid with cosine for best of both worlds |
 | Vector DB | Chroma (persistent, local) | Resume QA without re-embedding; metadata for citations |
 | PDF | PyMuPDF | Fast, reliable text extract |
 | arXiv | Official Atom API | No scraping |
@@ -209,12 +212,20 @@ A: I couldn't find that in the paper.
 
 **Grounding.** QA retrieves top-k chunks, prompts “answer only from context”, and records evidence chunk ids. This is basic RAG—not citation-faithful decoding—but it reliably refuses out-of-paper questions in practice.
 
+**Hybrid retrieval (BM25 + semantic).** Pure cosine similarity misses keyword-exact matches; pure BM25 misses semantic paraphrases. Combining both with a weighted score (`0.6 * cosine + 0.4 * BM25`) gives the best of both worlds. The alpha weight was chosen empirically — with more time I would tune it on a held-out query set.
+
+**LLM query expansion.** A vague topic like "latest LVM papers" becomes 5–6 targeted arXiv queries (e.g., "large vision model 2025", "vision transformer scaling"). This widens recall from 5 papers to ~50 deduplicated candidates, which the hybrid ranker then narrows to the best match. If the LLM expansion fails, we silently fall back to the raw query — no crash.
+
+**Two-stage ranking (50 → 10 → 1).** Stage 1 filters 50 candidates to 10 using fast hybrid scores. Stage 2 re-ranks those 10 with the same method but on a tighter candidate set. This mirrors real-world retrieval pipelines (coarse recall → fine rerank).
+
 **Known limitations / next with more time**
 
+- **Cross-encoder reranking.** A cross-encoder (e.g., `cross-encoder/ms-marco-MiniLM-L-6-v2`) scores query-document pairs jointly instead of independently, giving significantly better relevance than bi-encoder cosine. Not implemented because cross-encoders are O(n) per query (no pre-computed vectors), require GPU for tolerable latency, and would add ~500MB of model weight. For the 10-candidate Stage 2, the payoff would be real — this is the single highest-impact improvement I'd add next.
+- **Date-weighted scoring.** When the user says "latest" or "recent", boost papers published in the last 12 months. Currently handled by query expansion ("2025", "2026") but a proper temporal decay factor would be cleaner.
 - Heading heuristics miss weird layouts; layout-aware parsers (or arXiv HTML) would help.
 - No OCR path for scanned PDFs.
 - Single-paper focus (by design); multi-paper compare would be a new graph branch.
-- No eval set measuring faithfulness; would add a small golden Q/A suite.
+- Lightweight synthetic eval (`eval.py`) measures chunk retrieval hit rate but is not a full faithfulness benchmark — would add a golden Q/A suite with human-verified answers.
 
 ## Video reflection outline (≤ 4 min)
 
@@ -235,6 +246,7 @@ arxiv-digest-agent/
   pdf_parser.py
   llm.py
   vectorstore.py
+  eval.py              # standalone synthetic evaluation
   nodes/               # one file per stage
   tests/
   sessions/            # saved runs

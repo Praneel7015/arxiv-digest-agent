@@ -1,3 +1,10 @@
+"""
+arXiv retrieval: fetch candidate papers.
+
+For topic_search: loops over expanded_queries (from LLM expansion),
+fetches ~10 papers per query, deduplicates by arxiv_id.
+For paper_lookup: fetches exactly one paper by ID.
+"""
 from state import AgentState
 import arxiv_client
 
@@ -6,8 +13,8 @@ def arxiv_retrieval(state: AgentState) -> AgentState:
     """
     Fetch candidates from arXiv.
     - paper_lookup: fetch exactly that one paper (or none, if the id is bad).
-    - topic_search: fetch up to 5 candidates for ranking downstream.
-    Zero/failed results are recorded as warnings, not exceptions -
+    - topic_search: use expanded_queries for wider recall, deduplicate by arxiv_id.
+    Zero/failed results are recorded as warnings, not exceptions —
     the graph decides what to do with an empty candidate list.
     """
     if state.intent == "paper_lookup":
@@ -24,11 +31,18 @@ def arxiv_retrieval(state: AgentState) -> AgentState:
             state.candidates = [paper]
             state.selected_paper = paper  # only one candidate, no ranking needed
     else:
-        results = arxiv_client.search_by_topic(state.query, max_results=5)
+        # Use expanded queries if available; fall back to raw query.
+        queries = state.expanded_queries if state.expanded_queries else [state.query]
+        results = arxiv_client.search_multi_queries(queries, per_query=10)
         state.candidates = results
         if not results:
             state.warnings.append(
                 f"No arXiv papers found for topic '{state.query}'. "
                 "Try rephrasing or being more specific."
+            )
+        else:
+            state.warnings.append(
+                f"Fetched {len(results)} unique candidates from "
+                f"{len(queries)} expanded queries."
             )
     return state
