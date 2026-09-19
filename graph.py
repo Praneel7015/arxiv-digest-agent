@@ -7,6 +7,7 @@ functions that inspect state and return the name of the next node.
 from __future__ import annotations
 
 import json
+import sys
 from state import AgentState
 from nodes.query_understanding import query_understanding
 from nodes.arxiv_retrieval import arxiv_retrieval
@@ -15,6 +16,11 @@ from nodes.fetch_and_parse import fetch_and_parse
 from nodes.chunk_and_embed import chunk_and_embed
 from nodes.summarize import summarize, format_briefing_markdown
 from nodes.qa_loop import answer_question
+
+
+def _log(msg: str) -> None:
+    """Pipeline progress indicator — gives the user confidence that things are happening."""
+    print(f"  \u2192 {msg}", flush=True)
 
 
 def error_handler(state: AgentState) -> AgentState:
@@ -37,19 +43,37 @@ def route_after_retrieval(state: AgentState) -> str:
 
 def run_pipeline(query: str) -> AgentState:
     state = AgentState(query=query)
+
+    _log("Understanding query...")
     state = query_understanding(state)
+    if state.intent == "topic_search" and state.expanded_queries:
+        _log(f"Expanded to {len(state.expanded_queries)} search queries")
+
+    _log(f"Fetching papers from arXiv ({state.intent})...")
     state = arxiv_retrieval(state)
+    _log(f"Found {len(state.candidates)} candidate paper(s)")
 
     next_step = route_after_retrieval(state)
     if next_step == "error_handler":
         return error_handler(state)
 
     if next_step == "selection_ranking":
+        _log(f"Ranking {len(state.candidates)} candidates (hybrid BM25 + cosine, two-stage)...")
         state = selection_ranking(state)
+        _log(f"Selected: {state.selected_paper.title}")
 
+    _log("Downloading and parsing PDF...")
     state = fetch_and_parse(state)
+    _log(f"Parse status: {state.parse_status} ({len(state.parsed_sections)} sections)")
+
+    _log("Chunking and embedding into Chroma...")
     state = chunk_and_embed(state)
+    _log(f"{len(state.chunks)} chunks stored")
+
+    _log("Generating structured briefing via Groq...")
     state = summarize(state)
+    _log("Briefing complete")
+
     return state
 
 

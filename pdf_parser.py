@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import requests
-import fitz  # PyMuPDF
+import pymupdf  # was 'fitz' — renamed upstream
 
 MIN_TEXT_LENGTH = 500
 MAX_TEXT_LENGTH = 40_000
@@ -29,7 +29,7 @@ def download_pdf(pdf_url: str, timeout: int = 30) -> bytes:
 
 
 def extract_text(pdf_bytes: bytes) -> str:
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
         return "\n".join(page.get_text() for page in doc)
 
 
