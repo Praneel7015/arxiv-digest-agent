@@ -36,13 +36,14 @@ def _default_session_path(state: AgentState) -> Path:
     return SESSIONS_DIR / f"{name}.json"
 
 
-def _print_briefing(state: AgentState) -> None:
+def _print_briefing(state: AgentState, *, debug: bool = False) -> None:
     if not state.briefing:
         print("No briefing produced.")
         return
     print("\n" + format_briefing_markdown(state.briefing))
-    print("\n--- raw JSON ---")
-    print(json.dumps(state.briefing, indent=2))
+    if debug:
+        print("\n--- raw JSON ---")
+        print(json.dumps(state.briefing, indent=2))
 
 
 def _interactive_qa(state: AgentState, session_path: Path) -> AgentState:
@@ -74,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--question", help="One-shot QA question (non-interactive)")
     parser.add_argument("--no-qa", action="store_true", help="Stop after briefing")
     parser.add_argument("--save", help="Explicit path to save session JSON")
+    parser.add_argument("--debug", action="store_true", help="Print raw JSON briefing and all warnings")
     args = parser.parse_args(argv)
 
     if args.session:
@@ -81,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         session_path = Path(args.session)
         print(f"Loaded session from {session_path}")
         if state.briefing:
-            _print_briefing(state)
+            _print_briefing(state, debug=args.debug)
     else:
         query = " ".join(args.query).strip()
         if not query:
@@ -93,15 +95,21 @@ def main(argv: list[str] | None = None) -> int:
             for w in state.warnings:
                 print(f"  [warning] {w}")
             return 1
-        _print_briefing(state)
+        _print_briefing(state, debug=args.debug)
         session_path = Path(args.save) if args.save else _default_session_path(state)
         state.save(str(session_path))
         print(f"\nSession saved to {session_path}")
 
-    if state.warnings:
+    # Only show warnings that are user-relevant (skip internal ranking scores unless debug)
+    user_warnings = [
+        w for w in state.warnings
+        if not any(skip in w for skip in ("Stage 1:", "Stage 2:", "Fetched ", "Stored "))
+    ] if not args.debug else state.warnings
+
+    if user_warnings:
         print("\nWarnings:")
-        for w in state.warnings:
-            print(f"  - {w}")
+        for w in user_warnings:
+            print(f"  ⚠  {w}")
 
     if args.question:
         state = run_qa(state, args.question)
