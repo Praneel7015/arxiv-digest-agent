@@ -4,9 +4,6 @@ Autonomous agent that takes a **research topic** or **arXiv ID/URL**, retrieves 
 
 Built for the 8byte AI Intern assessment as an explicit **stateful graph** (nodes + edges + shared state)—not a single monolithic prompt.
 
-> **New to this codebase?** Start here → [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md)  
-> Beginner-friendly walkthrough with Mermaid diagrams, node-by-node explanations, and interview talking points.
-
 ## Architecture
 
 ```mermaid
