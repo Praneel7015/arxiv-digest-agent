@@ -9,31 +9,47 @@ Built for the 8byte AI Intern assessment as an explicit **stateful graph** (node
 
 ## Architecture
 
-```
-                    ┌─────────────────────┐
- query ───────────► │ query_understanding │ ◄── LLM expands topic to 5-6 search queries
-                    └──────────┬──────────┘
-                               │ intent: topic_search | paper_lookup
-                    ┌──────────▼──────────┐
-                    │   arxiv_retrieval   │ ◄── multi-query fetch (~50 papers), dedup
-                    └──────────┬──────────┘
-               ┌───────────────┼───────────────┐
-               │ 0 results     │ 1 result      │ many results
-               ▼               ▼               ▼
-         error_handler   fetch_and_parse  selection_ranking
-               │               ▲            (hybrid BM25 + cosine,
-               │               │             two-stage: 50→10→1)
-               │               └───────────────┘
-               │               │
-               │      ┌────────▼────────┐
-               │      │ chunk_and_embed │ ◄── sentence-transformers + Chroma
-               │      └────────┬────────┘
-               │      ┌────────▼────────┐
-               │      │    summarize    │ ◄── Groq (structured JSON briefing)
-               │      └────────┬────────┘
-               │      ┌────────▼────────┐
-               └─────►│     qa_loop     │ ◄── multi-query + hybrid rerank + section boost
-                      └─────────────────┘
+```mermaid
+flowchart TD
+    Q(["query\ntopic or arXiv ID/URL"]):::input --> QU
+
+    QU["**query_understanding**\nclassify intent\nLLM expands topic → 5-6 search queries"]
+    QU -->|topic_search| AR
+    QU -->|paper_lookup| AR
+
+    AR["**arxiv_retrieval**\nmulti-query fetch · dedup\n~50 candidates"]
+
+    AR -->|0 results| ERR
+    AR -->|1 result| FP
+    AR -->|many results| SR
+
+    ERR(["error_handler\nwarn · stop"]):::terminal
+
+    SR["**selection_ranking**\nhybrid BM25 + cosine\ntwo-stage  50 → 10 → 1"]
+    SR --> FP
+
+    FP["**fetch_and_parse**\ndownload PDF · PyMuPDF\nsplit into sections"]
+    FP -->|parse failed| FP2(["abstract-only fallback"]):::warn
+    FP --> CE
+    FP2 --> CE
+
+    CE["**chunk_and_embed**\noverlapping chunks\nMiniLM · Chroma"]
+    CE --> SUM
+
+    SUM["**summarize**\nGroq → structured JSON briefing\ntitle · problem · method · results · limitations"]
+    SUM --> QA
+
+    QA["**qa_loop**\nmulti-query expansion\nhybrid rerank + section boost\ngrounded RAG"]
+
+    CE -.->|vectors| DB[("Chroma\ndata/chroma/")]:::store
+    SUM -.->|session| JS[("sessions/*.json")]:::store
+    QA -.->|retrieve| DB
+    QA -.->|save history| JS
+
+    classDef input fill:#4f46e5,color:#fff,stroke:none
+    classDef terminal fill:#dc2626,color:#fff,stroke:none
+    classDef warn fill:#d97706,color:#fff,stroke:none
+    classDef store fill:#064e3b,color:#fff,stroke:none
 ```
 
 ### Shared state (`AgentState`)
