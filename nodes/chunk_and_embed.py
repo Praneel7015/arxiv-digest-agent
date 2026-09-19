@@ -50,6 +50,14 @@ def chunk_and_embed(state: AgentState) -> AgentState:
     for section, text in sections.items():
         built.extend(_chunk_text(section, text, start_idx=len(built)))
 
+    # Contextual chunk headers: prepend paper title + section name so embeddings
+    # capture "what paper and section this chunk belongs to".  Improves retrieval
+    # for section-specific questions (e.g. "What method did they use?") at zero cost.
+    title = paper.title or ""
+    for chunk in built:
+        header = f"{title} | {chunk.section}:" if title else f"{chunk.section}:"
+        chunk.text = f"{header} {chunk.text}"
+
     state.chunks = built
     if not built:
         state.warnings.append("No text available to chunk/embed.")

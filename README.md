@@ -210,7 +210,9 @@ A: I couldn't find that in the paper.
 
 **Abstract fallback on parse failure.** Scanned PDFs are common. Dying on extract would fail the rubric’s failure-case requirement. Abstract-only briefing is honest (and labeled in limitations) rather than hallucinating full-paper claims.
 
-**Grounding.** QA retrieves top-k chunks, prompts “answer only from context”, and records evidence chunk ids. This is basic RAG—not citation-faithful decoding—but it reliably refuses out-of-paper questions in practice.
+**Grounding.** QA retrieves top-k chunks via multi-query expansion (2–3 question rephrasings for wider recall), deduplicates, then hybrid-reranks with BM25 + cosine before sending to the LLM. The prompt enforces “answer only from context” and records evidence chunk IDs. This is enhanced RAG—not citation-faithful decoding—but it reliably refuses out-of-paper questions in practice.
+
+**Contextual chunk headers.** Each chunk is prefixed with “Paper Title | section:” before embedding, so the embedding captures what paper and section the chunk belongs to. This makes retrieval more precise for section-specific questions (e.g., “What method did they use?”) at zero inference cost—a technique inspired by Anthropic’s contextual retrieval research.
 
 **Hybrid retrieval (BM25 + semantic).** Pure cosine similarity misses keyword-exact matches; pure BM25 misses semantic paraphrases. Combining both with a weighted score (`0.6 * cosine + 0.4 * BM25`) gives the best of both worlds. The alpha weight was chosen empirically — with more time I would tune it on a held-out query set.
 

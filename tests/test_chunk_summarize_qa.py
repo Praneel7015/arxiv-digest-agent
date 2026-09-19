@@ -2,8 +2,10 @@ import numpy as np
 from state import AgentState, PaperMeta, Chunk
 from nodes.chunk_and_embed import chunk_and_embed, _chunk_text
 from nodes.summarize import summarize
-from nodes.qa_loop import answer_question
+from nodes.qa_loop import answer_question, _expand_qa_question, _hybrid_rerank, _retrieve_multi_query
 import llm
+import vectorstore
+import embeddings
 
 
 def test_chunk_text_overlaps():
@@ -48,6 +50,36 @@ def test_chunk_and_embed_upserts(monkeypatch, tmp_path):
     assert captured["n"] == len(state.chunks)
 
 
+def test_contextual_chunk_headers(monkeypatch):
+    """chunk_and_embed should prepend 'Title | section:' to each chunk's text."""
+    paper = PaperMeta(
+        arxiv_id="2401.33333",
+        title="Attention Is All You Need",
+        authors=["V"],
+        abstract="abs",
+        pdf_url="http://x",
+        published="2024",
+    )
+    state = AgentState(
+        query="q",
+        selected_paper=paper,
+        parsed_sections={"method": "We use self-attention."},
+        parse_status="ok",
+    )
+
+    monkeypatch.setattr(
+        "embeddings.embed",
+        lambda texts: np.ones((len(texts), 8), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        "vectorstore.upsert_chunks",
+        lambda arxiv_id, chunks, **kw: "paper_test",
+    )
+
+    state = chunk_and_embed(state)
+    assert state.chunks[0].text.startswith("Attention Is All You Need | method:")
+
+
 def test_summarize_enforces_limitations(monkeypatch):
     paper = PaperMeta(
         arxiv_id="2401.22222",
@@ -86,30 +118,127 @@ def test_summarize_enforces_limitations(monkeypatch):
 
 
 def test_qa_grounded_not_found(monkeypatch):
+    """QA should gracefully say 'couldn't find' when no chunks are retrieved."""
     state = AgentState(query="q", collection_name="paper_x")
-    monkeypatch.setattr("vectorstore.query_chunks", lambda *a, **k: [])
+    # Mock expansion to skip Groq call
+    monkeypatch.setattr(
+        "nodes.qa_loop._expand_qa_question",
+        lambda q: [q],
+    )
+    monkeypatch.setattr(
+        "vectorstore.query_chunks",
+        lambda *a, **k: [],
+    )
     state = answer_question(state, "What is the answer to life?")
     assert "couldn't find" in state.qa_history[-1][1].lower()
 
 
 def test_qa_uses_retrieved_chunks(monkeypatch):
+    """QA should use hybrid-reranked chunks and return proper chunk ids."""
     state = AgentState(query="q", collection_name="paper_x")
+
+    # Mock expansion
+    monkeypatch.setattr(
+        "nodes.qa_loop._expand_qa_question",
+        lambda q: [q],
+    )
+
+    fake_hits = [
+        {
+            "chunk_id": "method_0",
+            "section": "method",
+            "text": "We quantize KV caches to 4 bits.",
+            "distance": 0.1,
+        }
+    ]
     monkeypatch.setattr(
         "vectorstore.query_chunks",
-        lambda *a, **k: [
-            {
-                "chunk_id": "method_0",
-                "section": "method",
-                "text": "We quantize KV caches to 4 bits.",
-                "distance": 0.1,
-            }
-        ],
+        lambda *a, **k: fake_hits,
     )
-    monkeypatch.setattr(llm, "chat", lambda *a, **k: "They use 4-bit quantization [method_0].")
+    # With only 1 hit, reranker won't filter anything (hits <= top_k).
+    monkeypatch.setattr(
+        embeddings,
+        "embed",
+        lambda texts: np.ones((len(texts), 8), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        llm,
+        "chat",
+        lambda *a, **k: "They use 4-bit quantization [method_0].",
+    )
     state = answer_question(state, "What precision is used?")
     q, a, ids = state.qa_history[-1]
     assert "4-bit" in a
     assert ids == ["method_0"]
+
+
+def test_qa_expand_fallback(monkeypatch):
+    """If LLM expansion fails, _expand_qa_question returns [original question]."""
+    monkeypatch.setattr(
+        llm,
+        "chat_json",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("API down")),
+    )
+    result = _expand_qa_question("What is attention?")
+    assert result == ["What is attention?"]
+
+
+def test_qa_hybrid_rerank(monkeypatch):
+    """Hybrid reranking should keep top_k best chunks by BM25+cosine."""
+    hits = [
+        {"chunk_id": f"c{i}", "section": "s", "text": t}
+        for i, t in enumerate([
+            "transformer attention mechanism self-attention heads",
+            "pizza recipe Italian food cooking",
+            "multi-head attention scaled dot product query key value",
+            "gardening tips for spring flowers",
+            "attention weights softmax normalization",
+        ])
+    ]
+
+    # Mock embeddings: items 0, 2, 4 are relevant, 1, 3 are not.
+    def fake_embed(texts):
+        n = len(texts)
+        vecs = np.zeros((n, 4), dtype=np.float32)
+        for i, t in enumerate(texts):
+            if "attention" in t:
+                vecs[i] = [0.9, 0.1, 0.0, 0.0]
+            else:
+                vecs[i] = [0.0, 0.0, 0.9, 0.1]
+        return vecs
+
+    monkeypatch.setattr(embeddings, "embed", fake_embed)
+
+    result = _hybrid_rerank("attention mechanism", hits, top_k=3)
+    # Should keep the 3 attention-related chunks and drop pizza + gardening.
+    result_ids = {h["chunk_id"] for h in result}
+    assert "c0" in result_ids
+    assert "c2" in result_ids
+    assert "c4" in result_ids
+    assert "c1" not in result_ids
+    assert "c3" not in result_ids
+
+
+def test_qa_multi_query_dedup(monkeypatch):
+    """Multi-query retrieval should deduplicate chunks by chunk_id."""
+    call_log = []
+
+    def fake_query(collection_name, question, top_k=4):
+        call_log.append(question)
+        return [
+            {"chunk_id": "shared_0", "section": "s", "text": "shared chunk", "distance": 0.1},
+            {"chunk_id": f"unique_{len(call_log)}", "section": "s", "text": f"unique {len(call_log)}", "distance": 0.2},
+        ]
+
+    monkeypatch.setattr(vectorstore, "query_chunks", fake_query)
+
+    results = _retrieve_multi_query("col", ["q1", "q2", "q3"], top_k=4)
+    assert len(call_log) == 3  # all 3 queries executed
+    ids = [r["chunk_id"] for r in results]
+    # shared_0 appears once despite 3 queries returning it
+    assert ids.count("shared_0") == 1
+    # 3 unique chunks + 1 shared = 4 total
+    assert len(results) == 4
 
 
 def test_state_save_load_roundtrip(tmp_path):
