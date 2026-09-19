@@ -32,7 +32,7 @@ Built for the 8byte AI Intern assessment as an explicit **stateful graph** (node
                │      │    summarize    │ ◄── Groq (structured JSON briefing)
                │      └────────┬────────┘
                │      ┌────────▼────────┐
-               └─────►│     qa_loop     │ ◄── retrieve top-k chunks → grounded answer
+               └─────►│     qa_loop     │ ◄── multi-query + hybrid rerank + section boost
                       └─────────────────┘
 ```
 
